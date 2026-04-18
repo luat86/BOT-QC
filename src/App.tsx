@@ -84,7 +84,8 @@ interface AttachedFile {
 
 // --- Cấu hình API & Dữ liệu ---
 
-const apiKey = process.env.GEMINI_API_KEY;
+const getEnvApiKey = () => process.env.GEMINI_API_KEY || '';
+
 const MODEL_NAME = "gemini-2.0-flash";
 const MAX_FILES = 5;
 const MAX_FILE_SIZE_MB = 10; 
@@ -329,20 +330,20 @@ const FormattedContent: React.FC<{ content: string; onInputSubmit?: (values: Rec
 
 // --- Logic gọi Gemini API ---
 
-const genAI = new GoogleGenerativeAI(apiKey || '');
-
 async function callGemini(
   prompt: string, 
   history: Message[], 
   useSearch: boolean,
   attachedFiles: AttachedFile[],
   isChecklistMode: boolean,
-  useInternalOnly: boolean
+  useInternalOnly: boolean,
+  activeApiKey: string
 ): Promise<{ text: string; sources: Source[] }> {
   try {
-    if (!apiKey) {
-      throw new Error("Thiếu GEMINI_API_KEY trong biến môi trường.");
+    if (!activeApiKey) {
+      throw new Error("Vui lòng cung cấp API Key để sử dụng tính năng này.");
     }
+    const genAI = new GoogleGenerativeAI(activeApiKey);
 
     const isDocMode = attachedFiles.length > 0;
     const isStrictInternal = isDocMode && useInternalOnly;
@@ -1022,6 +1023,10 @@ const RightSidebar = ({
 
 export default function GeminiSearchApp() {
   // State
+  const [userApiKey, setUserApiKey] = useState(localStorage.getItem('user_gemini_api_key') || '');
+  const [showLoginModal, setShowLoginModal] = useState(!localStorage.getItem('user_gemini_api_key'));
+  const activeApiKey = userApiKey || getEnvApiKey();
+
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [input, setInput] = useState('');
@@ -1366,7 +1371,8 @@ export default function GeminiSearchApp() {
         useSearch, 
         attachedFiles,
         isChecklistMode || isQuickAction,
-        useInternalOnly
+        useInternalOnly,
+        activeApiKey
       );
 
       const botMessage: Message = {
@@ -1379,6 +1385,9 @@ export default function GeminiSearchApp() {
 
       updateSessionMessages(currentSessionId, [...updatedMessages, botMessage]);
     } catch (error: any) {
+      if (error.message?.includes("API Key") || error.message?.includes("API_KEY")) {
+        setShowLoginModal(true);
+      }
       const errorMessage: Message = {
         id: generateId(),
         role: 'model',
@@ -1434,6 +1443,7 @@ export default function GeminiSearchApp() {
               <button 
                 onClick={() => setIsSidebarOpen(true)}
                 className="p-2 -ml-1 text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
+                title="Danh sách phiên hỏi đáp"
               >
                 <Menu size={22} />
               </button>
@@ -1457,13 +1467,24 @@ export default function GeminiSearchApp() {
               </div>
             </div>
             
-            <button 
-              onClick={() => setIsRightSidebarOpen(true)}
-              className="p-2 rounded-full transition-colors hover:bg-gray-100 text-gray-600"
-              title="Danh mục nghiệm thu"
-            >
-              <PanelRightOpen size={22} />
-            </button>
+            <div className="flex items-center gap-1">
+              <button 
+                onClick={() => setShowLoginModal(true)}
+                className="p-2 rounded-full transition-colors hover:bg-gray-100 text-gray-600 relative group"
+                title="Đăng nhập / Đổi API Key"
+              >
+                <div className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-indigo-500 border-2 border-white 
+                  transition-all group-hover:scale-125" style={{ display: userApiKey ? 'block' : 'none' }}></div>
+                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+              </button>
+              <button 
+                onClick={() => setIsRightSidebarOpen(true)}
+                className="p-2 rounded-full transition-colors hover:bg-gray-100 text-gray-600"
+                title="Danh mục nghiệm thu"
+              >
+                <PanelRightOpen size={22} />
+              </button>
+            </div>
           </header>
 
           {/* Khu vực Chat */}
@@ -1748,6 +1769,90 @@ export default function GeminiSearchApp() {
           onClose={() => setIsRightSidebarOpen(false)}
           onItemClick={handleQuickSelect}
       />
+
+      {/* Thay vì div lg:hidden từ right sidebar ở đây, RightSidebar component đã tự xử lý overlay nếu dùng AnimatePresence bên trong, tuy nhiên ta cần modal đăng nhập */}
+      <AnimatePresence>
+        {showLoginModal && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm"
+          >
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden relative"
+            >
+              <div className="px-6 py-5 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
+                <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-indigo-600"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                  Đăng nhập API Key
+                </h3>
+                {userApiKey && (
+                  <button 
+                    onClick={() => setShowLoginModal(false)}
+                    className="p-1.5 rounded-full hover:bg-gray-200 text-gray-500 transition-colors"
+                  >
+                    <X size={18} />
+                  </button>
+                )}
+              </div>
+              <div className="p-6">
+                <p className="text-sm text-gray-600 mb-4 leading-relaxed">
+                  Trợ lý QA/QC Xây dựng có thể sử dụng sức mạnh của Google Gemini. Nhập Google Gemini API Key cá nhân của bạn để mở khóa toàn bộ tính năng và giới hạn sử dụng.
+                </p>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1.5 ml-1">
+                      Gemini API Key
+                    </label>
+                    <input 
+                      type="password"
+                      placeholder="AIzaSy..."
+                      defaultValue={userApiKey}
+                      id="api-key-input"
+                      className="w-full px-4 py-3 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none transition-all font-mono text-sm"
+                    />
+                  </div>
+                  <div className="flex gap-3 pt-2">
+                    <button 
+                      onClick={() => {
+                        const val = (document.getElementById('api-key-input') as HTMLInputElement).value.trim();
+                        setUserApiKey(val);
+                        if (val) {
+                          localStorage.setItem('user_gemini_api_key', val);
+                          setShowLoginModal(false);
+                        } else {
+                          localStorage.removeItem('user_gemini_api_key');
+                          alert('Vui lòng nhập API Key để tiếp tục.');
+                        }
+                      }}
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 px-4 rounded-xl transition-all active:scale-95 shadow-sm"
+                    >
+                      Xác nhận lưu
+                    </button>
+                    {userApiKey && (
+                      <button 
+                        onClick={() => {
+                          setUserApiKey('');
+                          localStorage.removeItem('user_gemini_api_key');
+                          // Dòng này đã cố ý không ẩn modal để buộc người dùng nhập lại key mới có thể dùng app
+                        }}
+                        className="px-4 py-2.5 rounded-xl border border-red-200 text-red-600 hover:bg-red-50 font-semibold transition-all active:scale-95 flex items-center justify-center"
+                        title="Đăng xuất / Xóa Key"
+                      >
+                        Đăng xuất
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       </div>
     </div>
