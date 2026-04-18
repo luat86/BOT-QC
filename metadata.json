@@ -1,0 +1,7 @@
+{
+  "name": "MVP-PLAYBOT QC",
+  "description": "",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
