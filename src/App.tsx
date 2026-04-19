@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
 import html2pdf from 'html2pdf.js';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import { 
   Send, 
   Bot, 
@@ -86,7 +86,7 @@ interface AttachedFile {
 
 const getEnvApiKey = () => process.env.GEMINI_API_KEY || '';
 
-const MODEL_NAME = "gemini-2.0-flash";
+const MODEL_NAME = "gemini-3-flash-preview";
 const MAX_FILES = 5;
 const MAX_FILE_SIZE_MB = 10; 
 
@@ -343,13 +343,13 @@ async function callGemini(
     if (!activeApiKey) {
       throw new Error("Vui lòng cung cấp API Key để sử dụng tính năng này.");
     }
-    const genAI = new GoogleGenerativeAI(activeApiKey);
+    const ai = new GoogleGenAI({ apiKey: activeApiKey });
 
     const isDocMode = attachedFiles.length > 0;
     const isStrictInternal = isDocMode && useInternalOnly;
 
     // Khởi tạo model với system instruction
-    let systemInstructionText = `BẠN LÀ CHUYÊN GIA QA/QC XÂY DỰNG CAO CẤP TẠI VIỆT NAM.
+    let systemInstructionText = `BẠN LÀ CHUYÊN GIA QA/QC XÂY DỰNG CAO CẤP TẠI VIỆT NAM (Mô hình: Gemini 3).
     Nhiệm vụ của bạn là hỗ trợ kỹ sư kiểm soát chất lượng, lập hồ sơ nghiệm thu, tra cứu tiêu chuẩn (TCVN) và giải quyết các vấn đề kỹ thuật tại hiện trường.
 
     QUY TẮC PHẢN HỒI:
@@ -413,12 +413,6 @@ async function callGemini(
     - Sử dụng bảng Markdown cho các thông số kỹ thuật, kết quả thí nghiệm hoặc so sánh.
     - Ví dụ: | Hạng mục | Yêu cầu kỹ thuật | TCVN đối chiếu |`;
 
-    const model = genAI.getGenerativeModel({ 
-      model: MODEL_NAME,
-      systemInstruction: systemInstructionText,
-      tools: (useSearch && !isStrictInternal) ? [{ googleSearch: {} } as any] : []
-    });
-
     // Chuẩn bị nội dung file
     const fileParts = attachedFiles.map(f => {
       if (f.isBinary) {
@@ -438,7 +432,6 @@ async function callGemini(
           }
         };
       } else {
-        // File text được gộp vào prompt
         return null;
       }
     }).filter(p => p !== null) as any[];
@@ -457,44 +450,49 @@ async function callGemini(
     const finalPrompt = documentsContent ? `${documentsContent}\nCÂU HỎI CỦA NGƯỜI DÙNG:\n${prompt}` : prompt;
 
     // Chuyển đổi lịch sử
-    // LƯU Ý: Lịch sử phải bắt đầu bằng role 'user'. Nếu tin nhắn đầu tiên là 'model', ta sẽ bỏ qua nó.
-    let chatHistory = history.map(msg => ({
+    const contents: any[] = history.map(msg => ({
       role: msg.role === 'model' ? 'model' : 'user',
       parts: [{ text: msg.content }]
     }));
 
-    if (chatHistory.length > 0 && chatHistory[0].role === 'model') {
-      chatHistory = chatHistory.slice(1);
+    // Đảm bảo bắt đầu bằng User và xen kẽ
+    if (contents.length > 0 && contents[0].role === 'model') {
+      contents.shift();
     }
 
-    const chat = model.startChat({
-      history: chatHistory,
-      generationConfig: {
+    // Thêm tin nhắn hiện tại
+    contents.push({
+      role: 'user',
+      parts: [{ text: finalPrompt }, ...fileParts]
+    });
+
+    const response = await ai.models.generateContent({
+      model: MODEL_NAME,
+      contents,
+      config: {
+        systemInstruction: systemInstructionText,
+        tools: (useSearch && !isStrictInternal) ? [{ googleSearch: {} }] : [],
         temperature: 0.1,
-        maxOutputTokens: 4096,
         topP: 0.95,
       }
     });
 
-    const result = await chat.sendMessage([...fileParts, { text: finalPrompt }]);
-    const response = await result.response;
-    const text = response.text();
+    const text = response.text || "";
 
-    // Trích xuất nguồn tham khảo từ grounding metadata
+    // Trích xuất nguồn tham khảo
     let sources: Source[] = [];
-    const groundingMetadata = response.candidates?.[0]?.groundingMetadata as any;
-    if (groundingMetadata && groundingMetadata.groundingAttributions) {
-      sources = (groundingMetadata.groundingAttributions as any[])
-        .flatMap((attr: any) => {
-          if (attr && attr.content && attr.content.uri && attr.content.title) {
-            return [{
-              title: attr.content.title,
-              uri: attr.content.uri
-            }];
-          }
-          return [];
-        });
-      // Remove duplicates
+    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    if (chunks) {
+      sources = chunks.flatMap((chunk: any) => {
+        if (chunk.web) {
+          return [{
+            title: chunk.web.title || "Nguồn bổ sung",
+            uri: chunk.web.uri
+          }];
+        }
+        return [];
+      });
+      // Loại bỏ trùng lặp
       sources = Array.from(new Map(sources.map(s => [s.uri, s])).values());
     }
 
